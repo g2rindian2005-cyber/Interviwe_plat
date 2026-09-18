@@ -5,7 +5,7 @@ const fetch = require('node-fetch');
 
 const AI_API_KEY = process.env.AI_API_KEY;
 const AI_API_BASE_URL = process.env.AI_API_BASE_URL || 'https://api.openai.com/v1';
-const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
+const AI_MODEL = process.env.AI_MODEL || 'openai/gpt-oss-20b';
 
 const hasAI = Boolean(AI_API_KEY);
 
