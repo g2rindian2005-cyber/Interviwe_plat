@@ -119,6 +119,8 @@ Then in `backend/.env`, set `DB_HOST=localhost` and `DB_SSL=false` (a self-hoste
 ### 2. Backend
 ```bash
 cd backend
+sudo dnf install postgresql15 -y
+sudo dnf install -y nodejs
 cp .env.example .env
 # --> Edit .env: DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_SSL, JWT_SECRET (see "What You Must Change" below)
 npm install
