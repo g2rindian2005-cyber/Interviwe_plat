@@ -133,6 +133,7 @@ sudo dnf install -y nodejs
 cp .env.example .env
 # --> Edit .env: DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_SSL, JWT_SECRET (see "What You Must Change" below)
 npm install
+npm run migrate
 npm run dev          # starts on http://localhost:5000 and auto-creates tables on first boot
 ```
 
