@@ -108,6 +108,15 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO devopsai_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO devopsai_user;
 \q
 ```
+
+### permision inside psql 
+GRANT USAGE, CREATE ON SCHEMA public TO devopsai_user;
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO devopsai_user;
+
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO devopsai_user;
+
+#####################################
 Then in `backend/.env`, set `DB_HOST=localhost` and `DB_SSL=false` (a self-hosted Postgres usually has no SSL configured — leaving `DB_SSL=true` against a non-SSL server will make every query fail). No manual `CREATE TABLE` needed either way — the backend still auto-migrates on startup.
 
 ## Local Setup (Development)
