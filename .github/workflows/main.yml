@@ -1,123 +1,3 @@
-name: CI/CD - DevOpsAI Platform
-
-# CI runs on every push/PR. Deploy only runs on a push to main, and only
-# after both build jobs succeed.
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  # ---------------------------------------------------------------------
-  # 1. Backend: install deps, apply schema against a throwaway Postgres,
-  #    boot the server and hit /api/health. Catches broken deps, bad SQL,
-  #    and startup crashes before anything reaches the server.
-  # ---------------------------------------------------------------------
-  backend-ci:
-    name: Backend CI
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: devopsai_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      NODE_ENV: test
-      PORT: 5000
-      FRONTEND_URL: http://localhost:5173
-      DB_HOST: localhost
-      DB_PORT: 5432
-      DB_NAME: devopsai_test
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_SSL: "false"
-      JWT_SECRET: ci-test-secret-not-for-production
-      JWT_EXPIRES_IN: 7d
-      AI_API_KEY: ""
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Apply database schema
-        run: npm run migrate
-
-      - name: Boot server and check /api/health
-        run: |
-          npm start &
-          SERVER_PID=$!
-          for i in $(seq 1 15); do
-            if curl -sf http://localhost:5000/api/health; then
-              echo "Server is healthy"
-              kill $SERVER_PID
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Server did not become healthy in time"
-          kill $SERVER_PID || true
-          exit 1
-
-  # ---------------------------------------------------------------------
-  # 2. Frontend: install deps and run a production build. Catches broken
-  #    imports, JSX errors, and bad Vite config.
-  # ---------------------------------------------------------------------
-  frontend-ci:
-    name: Frontend CI
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build
-        run: npm run build
-        env:
-          # Placeholder for the CI build check only. The real value used in
-          # production lives in frontend/.env on the EC2 box and is baked in
-          # again when the deploy job rebuilds on the server.
-          VITE_API_URL: http://localhost:5000/api
-
-  # ---------------------------------------------------------------------
-  # 3. Deploy: only on a push to main, only if both CI jobs above passed.
-  #    SSHes into the EC2 box, pulls the new code, reinstalls deps,
-  #    rebuilds the frontend, and restarts the backend under pm2.
-  #    This mirrors DEPLOYMENT.md's manual steps, just automated.
-  # ---------------------------------------------------------------------
   deploy:
     name: Deploy to EC2
     needs: [backend-ci, frontend-ci]
@@ -131,22 +11,19 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_PROJECT_PATH: ${{ secrets.EC2_PROJECT_PATH }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
         run: |
           missing=0
-          for name in EC2_HOST EC2_USER EC2_SSH_KEY EC2_PROJECT_PATH AI_API_KEY; do
-            value="${!name}"
-            if [ -z "$value" ]; then
+          for name in EC2_HOST EC2_USER EC2_SSH_KEY AI_API_KEY; do
+            if [ -z "${!name}" ]; then
               echo "::error::Missing required secret: $name"
               missing=1
             fi
           done
-          if [ "$missing" -eq 1 ]; then
-            echo "One or more required secrets are empty. Add them under Settings > Secrets and variables > Actions, then re-run."
+          if [ "$missing" -ne 0 ]; then
+            echo "Required deployment secrets are missing."
             exit 1
           fi
-          echo "All required secrets are present."
 
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -159,31 +36,56 @@ jobs:
           script_stop: true
           envs: AI_API_KEY
           script: |
-            set -e
-            cd "${{ secrets.EC2_PROJECT_PATH }}"
+            set -euo pipefail
 
-            echo "Pulling latest code..."
-            git pull origin main
+            PROJECT_PATH="$HOME/Interviwe_plat"
+            REPOSITORY_URL="https://github.com/g2rindian2005-cyber/Interviwe_plat.git"
 
-            # backend/.env already exists on this server and is NOT touched
-            # by git (it's gitignored). Only the AI_API_KEY line is updated
-            # here from the GitHub secret; every other value (DB_*, JWT_*,
-            # FRONTEND_URL, etc.) stays exactly as it already is in the file.
-            echo "Updating AI_API_KEY in backend/.env..."
-            if grep -q "^AI_API_KEY=" backend/.env; then
-              sed -i "s|^AI_API_KEY=.*|AI_API_KEY=$AI_API_KEY|" backend/.env
-            else
-              echo "AI_API_KEY=$AI_API_KEY" >> backend/.env
+            mkdir -p "$HOME"
+
+            if [ ! -d "$PROJECT_PATH/.git" ]; then
+              if [ -e "$PROJECT_PATH" ] && [ "$(find "$PROJECT_PATH" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
+                echo "Removing incomplete deployment directory: $PROJECT_PATH"
+                rm -rf "$PROJECT_PATH"
+              fi
+              echo "Cloning repository..."
+              git clone "$REPOSITORY_URL" "$PROJECT_PATH"
             fi
 
-            echo "Installing & restarting backend..."
+            cd "$PROJECT_PATH"
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Update AI_API_KEY in backend/.env without overwriting other env vars
+            if [ ! -f backend/.env ]; then
+              cat > backend/.env <<EOF
+NODE_ENV=production
+PORT=5000
+AI_API_KEY=$AI_API_KEY
+EOF
+            else
+              AI_API_KEY="$AI_API_KEY" node <<'NODE'
+const fs = require('fs');
+const path = 'backend/.env';
+const value = process.env.AI_API_KEY || '';
+let text = fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : '';
+const line = `AI_API_KEY=${value}`;
+if (/^AI_API_KEY=.*$/m.test(text)) text = text.replace(/^AI_API_KEY=.*$/m, line);
+else text += (text.endsWith('\n') || text.length === 0 ? '' : '\n') + line + '\n';
+fs.writeFileSync(path, text);
+NODE
+            fi
+
+            echo "Installing and restarting backend..."
             cd backend
-            npm install --production
-            pm2 restart devopsai-backend || pm2 start server.js --name devopsai-backend
+            npm install --omit=dev
+            if pm2 describe devopsai-backend >/dev/null 2>&1; then
+              pm2 restart devopsai-backend --update-env
+            else
+              pm2 start server.js --name devopsai-backend
+            fi
             pm2 save
 
-            # frontend/.env already exists on this server too and is left
-            # untouched â€” VITE_API_URL etc. stay whatever is already set.
             echo "Building frontend..."
             cd ../frontend
             npm install
@@ -191,18 +93,19 @@ jobs:
 
             echo "Publishing frontend build to nginx..."
             sudo mkdir -p /var/www/devopsai
-            sudo cp -r dist/* /var/www/devopsai/
+            sudo rm -rf /var/www/devopsai/*
+            sudo cp -r dist/. /var/www/devopsai/
 
             echo "Checking backend health..."
             cd ..
-            for i in $(seq 1 10); do
-              if curl -sf http://localhost:5000/api/health; then
+            for i in $(seq 1 20); do
+              if curl --fail --silent http://localhost:5000/api/health; then
                 echo "Backend is healthy."
                 break
               fi
-              if [ "$i" -eq 10 ]; then
+              if [ "$i" -eq 20 ]; then
                 echo "Backend did not become healthy after deploy."
-                pm2 logs devopsai-backend --lines 50 --nostream
+                pm2 logs devopsai-backend --lines 50 --nostream || true
                 exit 1
               fi
               sleep 3
