@@ -11,8 +11,7 @@ on:
 jobs:
   # ---------------------------------------------------------------------
   # 1. Backend: install deps, apply schema against a throwaway Postgres,
-  #    boot the server and hit /api/health. Catches broken deps, bad SQL,
-  #    and startup crashes before anything reaches the server.
+  #    boot the server and hit /api/health.
   # ---------------------------------------------------------------------
   backend-ci:
     name: Backend CI
@@ -21,7 +20,7 @@ jobs:
       run:
         working-directory: backend
 
-    services:
+services:
       postgres:
         image: postgres:16
         env:
@@ -36,7 +35,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-    env:
+env:
       NODE_ENV: test
       PORT: 5000
       FRONTEND_URL: http://localhost:5173
@@ -50,24 +49,22 @@ jobs:
       JWT_EXPIRES_IN: 7d
       AI_API_KEY: ""
 
-    steps:
+steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+- name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
+- name: Install dependencies
+        run: npm install
 
-      - name: Apply database schema
+- name: Apply database schema
         run: npm run migrate
 
-      - name: Boot server and check /api/health
+- name: Boot server and check /api/health
         run: |
           npm start &
           SERVER_PID=$!
@@ -83,9 +80,8 @@ jobs:
           kill $SERVER_PID || true
           exit 1
 
-  # ---------------------------------------------------------------------
-  # 2. Frontend: install deps and run a production build. Catches broken
-  #    imports, JSX errors, and bad Vite config.
+# ---------------------------------------------------------------------
+  # 2. Frontend: install deps and run a production build.
   # ---------------------------------------------------------------------
   frontend-ci:
     name: Frontend CI
@@ -94,33 +90,30 @@ jobs:
       run:
         working-directory: frontend
 
-    steps:
+steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+- name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
+- name: Install dependencies
+        run: npm install
 
-      - name: Build
+- name: Build
         run: npm run build
         env:
-          # Placeholder for the CI build check only. The real value used in
-          # production lives in frontend/.env on the EC2 box and is baked in
-          # again when the deploy job rebuilds on the server.
+          # Placeholder for the CI build check only. The real value lives in
+          # frontend/.env on the EC2 box and is baked in again when the
+          # deploy job rebuilds on the server.
           VITE_API_URL: http://localhost:5000/api
 
-  # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
   # 3. Deploy: only on a push to main, only if both CI jobs above passed.
   #    SSHes into the EC2 box, pulls the new code, reinstalls deps,
   #    rebuilds the frontend, and restarts the backend under pm2.
-  #    This mirrors DEPLOYMENT.md's manual steps, just automated.
   # ---------------------------------------------------------------------
   deploy:
     name: Deploy to EC2
@@ -129,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
 
-    steps:
+steps:
       - name: Verify required secrets are set
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
@@ -152,7 +145,7 @@ jobs:
           fi
           echo "All required secrets are present."
 
-      - name: Deploy over SSH
+- name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
@@ -166,10 +159,10 @@ jobs:
             set -e
             cd "${{ secrets.EC2_PROJECT_PATH }}"
 
-            echo "Pulling latest code..."
+echo "Pulling latest code..."
             git pull origin main
 
-            # backend/.env already exists on this server and is NOT touched
+# backend/.env already exists on this server and is NOT touched
             # by git (it's gitignored). Only the AI_API_KEY line is updated
             # here from the GitHub secret; every other value (DB_*, JWT_*,
             # FRONTEND_URL, etc.) stays exactly as it already is in the file.
@@ -180,24 +173,24 @@ jobs:
               echo "AI_API_KEY=$AI_API_KEY" >> backend/.env
             fi
 
-            echo "Installing & restarting backend..."
+echo "Installing & restarting backend..."
             cd backend
             npm install --production
             pm2 restart devopsai-backend || pm2 start server.js --name devopsai-backend
             pm2 save
 
-            # frontend/.env already exists on this server too and is left
+# frontend/.env already exists on this server too and is left
             # untouched — VITE_API_URL etc. stay whatever is already set.
             echo "Building frontend..."
             cd ../frontend
             npm install
             npm run build
 
-            echo "Publishing frontend build to nginx..."
+echo "Publishing frontend build to nginx..."
             sudo mkdir -p /var/www/devopsai
             sudo cp -r dist/* /var/www/devopsai/
 
-            echo "Checking backend health..."
+echo "Checking backend health..."
             cd ..
             for i in $(seq 1 10); do
               if curl -sf http://localhost:5000/api/health; then
@@ -212,4 +205,4 @@ jobs:
               sleep 3
             done
 
-            echo "Deploy finished."
+echo "Deploy finished."
